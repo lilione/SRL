@@ -1,7 +1,8 @@
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 from keras.utils import np_utils
-from keras.models import Graph
+from keras.models import Sequential
+from keras.layers import Merge
 from keras.layers.core import Dense, Dropout, Activation
 from keras.layers.convolutional import Convolution1D, MaxPooling1D, AveragePooling1D
 from keras.preprocessing import sequence
@@ -49,8 +50,8 @@ def data_proc(file):
         now.append(tmp)
     f.close()
     if file == train_file:
-        length = len(sentence) / 10
-        print 'train', length
+        length = len(sentence)
+        print 'train', length / 10
         return sentence[ : length]
     else:
         length = len(sentence)
@@ -93,40 +94,34 @@ def WE_proc():
     return WE
 
 def CGNN(C):
-    model = Graph()
-
-    model.add_input(name = 'arg1', input_shape = (maxlen, ), dtype = 'int')
-    model.add_input(name = 'arg2', input_shape = (maxlen, ), dtype = 'int')
-
-    # we start off with an efficient embedding layer which maps
-    # our vocab indices into embedding_dims dimensions
-    model.add_node(Embedding(input_dim = len(vocab) + 1, input_length = maxlen, weights = [WE], output_dim = embed_dim),
-                   name = 'embedding1', input = 'arg1')
-    model.add_node(Embedding(input_dim=len(vocab) + 1, input_length = maxlen, weights = [WE], output_dim = embed_dim),
-                   name = 'embedding2', input = 'arg2')
-    # model.add_node(Dropout(0.2),name='d1',input='embedding1')
-    # model.add_node(Dropout(0.2),name='d2',input='embedding2')
-
-
-    model.add_shared_node(Convolution1D(nb_filter = nb_filter1,
+    input1 = Sequential()
+    input1.add(Embedding(input_dim = len(vocab) + 1, input_length = maxlen, weights = [WE], output_dim = embed_dim))
+    input1.add(Convolution1D(nb_filter = nb_filter1,
                                         filter_length = filter_length1,
                                         border_mode = 'valid',
                                         activation = activation,
-                                        subsample_length = 1), inputs = ['embedding1', 'embedding2'], name = 'cnn1',
-                          merge_mode = 'concat')
+                                        subsample_length = 1))
 
-    model.add_node(MaxPooling1D(pool_length = pool_length1), name = 'mpooling1', input = 'cnn1')
+    input2 = Sequential()
+    input2.add(Embedding(input_dim = len(vocab) + 1, input_length = maxlen, weights = [WE], output_dim = embed_dim))
+    input2.add(Convolution1D(nb_filter = nb_filter1,
+                                        filter_length = filter_length1,
+                                        border_mode = 'valid',
+                                        activation = activation,
+                                        subsample_length = 1))
 
-    # This is the CGNN.  (Just one vector LSTM)
-    model.add_node(LSTM(addSize), input = 'mpooling1', name = "lstm")
 
-    model.add_node(Dense(C), name = 'final', input = 'lstm')
-    model.add_node(Activation('sigmoid'), name = 'lastDim', input = 'final')
-    model.add_output(name = 'output', input = 'lastDim')
+    merge = Merge([input1, input2], mode='concat')
+
+    model = Sequential()
+    model.add(merge)
+    model.add(MaxPooling1D(pool_length = pool_length1))
+    model.add(LSTM(addSize))
+    model.add(Dense(C, activation='sigmoid'))
 
     # ada=Adagrad(lr=lr, epsilon=1e-06)
     # sgd = SGD(lr=lr)
-    model.compile(optimizer = 'adam', loss = {'output': 'binary_crossentropy'})
+    model.compile(optimizer = 'adam', loss = 'binary_crossentropy')
 
     model.summary()
     return model
@@ -167,7 +162,7 @@ def test_result(now, x, y):
     X_test_2 = np.array(X_test_2)
 
     global mod
-    Y_test = mod.predict({'arg1': X_test_1, 'arg2': X_test_2})['output']
+    Y_test = mod.predict([X_test_1, X_test_2])
     result = encoder.inverse_transform(np.argmax(Y_test))
     return result
 
@@ -298,7 +293,7 @@ def train():
 
     global mod
     mod = CGNN(C)
-    mod.fit({'arg1': X_train_1, 'arg2': X_train_2, 'output': dummy_y},
+    mod.fit([X_train_1, X_train_2], dummy_y,
               batch_size=batch_size, shuffle=True,
               nb_epoch=nb_epoch)
     mod.save_weights('my_model_weights.h5')
