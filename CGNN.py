@@ -8,22 +8,23 @@ from keras.layers.convolutional import Convolution1D, MaxPooling1D, AveragePooli
 from keras.preprocessing import sequence
 from keras.layers.embeddings import Embedding
 from keras.layers.recurrent import LSTM
+from keras.callbacks import Callback,ModelCheckpoint
 import time
 
 embed_dim = 300
 maxlen = 8
 
-nb_filter1 = 512
-filter_length1 = 2
-pool_length1 = maxlen - filter_length1 + 1
-activation = "tanh"
+#nb_filter1 = 512
+#filter_length1 = 2
+#pool_length1 = maxlen - filter_length1 + 1
 addSize = 256
 
-nb_epoch = 100
-batch_size = 128
+#nb_epoch = 100
+#batch_size = 128
 
 #train_file = 'train.csv'
 train_file = 'CoNLL2009-ST-English-train.txt'
+#test_file = 'train.csv'
 #test_file = 'test.csv'
 test_file = 'test.wsj.closed.GOLD'
 #embed_file = 'glove.6B.50d.txt'
@@ -51,11 +52,12 @@ def data_proc(file):
     f.close()
     if file == train_file:
         length = len(sentence)
-        print 'train', length / 10
+        length /= 10
+        print 'number of training sentence', length
         return sentence[ : length]
     else:
         length = len(sentence)
-        print 'test', length
+        #print 'number of testing sentence', length
         return sentence[ : length]
 
 def vocab_proc(file):
@@ -93,13 +95,13 @@ def WE_proc():
             WE[word_index[x], : ] = np.array(np.random.uniform(-0.5 / embed_dim, 0.5 / embed_dim, (embed_dim,)),dtype='float32')
     return WE
 
-def CGNN(C):
+def CGNN(nb_filter1, filter_length1, pool_length1, nb_class):
     input1 = Sequential()
     input1.add(Embedding(input_dim = len(vocab) + 1, input_length = maxlen, weights = [WE], output_dim = embed_dim))
     input1.add(Convolution1D(nb_filter = nb_filter1,
                                         filter_length = filter_length1,
                                         border_mode = 'valid',
-                                        activation = activation,
+                                        activation = 'tanh',
                                         subsample_length = 1))
 
     input2 = Sequential()
@@ -107,7 +109,7 @@ def CGNN(C):
     input2.add(Convolution1D(nb_filter = nb_filter1,
                                         filter_length = filter_length1,
                                         border_mode = 'valid',
-                                        activation = activation,
+                                        activation = 'tanh',
                                         subsample_length = 1))
 
 
@@ -117,7 +119,7 @@ def CGNN(C):
     model.add(merge)
     model.add(MaxPooling1D(pool_length = pool_length1))
     model.add(LSTM(addSize))
-    model.add(Dense(C, activation='sigmoid'))
+    model.add(Dense(nb_class, activation='softmax'))
 
     # ada=Adagrad(lr=lr, epsilon=1e-06)
     # sgd = SGD(lr=lr)
@@ -281,6 +283,7 @@ def train():
     global X_train_1, X_train_2, Y_train
     X_train_1 = np.array(X_train_1)
     X_train_2 = np.array(X_train_2)
+    print 'number of training pairs', X_train_1.shape[0]
 
     # encode class values as integers
     global encoder
@@ -291,12 +294,27 @@ def train():
     # convert integers to dummy variables (i.e. one hot encoded)
     dummy_y = np_utils.to_categorical(encoded_Y)
 
-    global mod
-    mod = CGNN(C)
-    mod.fit([X_train_1, X_train_2], dummy_y,
-              batch_size=batch_size, shuffle=True,
-              nb_epoch=nb_epoch)
-    mod.save_weights('my_model_weights.h5')
+    nb_epoch = 50
+
+    Nb_filter1 = [256, 512, 1024]
+    Filter_length1 = [2, 4]
+    Batch_size = [20, 128]
+    for nb_filter1 in Nb_filter1:
+        for filter_length1 in Filter_length1:
+            pool_length1 = maxlen - filter_length1 + 1
+            for batch_size in Batch_size:
+                print 'nb_filter1 = ', nb_filter1
+                print 'filter_length1 = ', filter_length1
+                print 'batch_size = ', batch_size
+
+                global mod
+                mod = CGNN(nb_filter1, filter_length1, pool_length1, C)
+
+                checkpointer = ModelCheckpoint(filepath = "loss_weights.h5", verbose=1, save_best_only=True)
+
+                mod.fit([X_train_1, X_train_2], dummy_y,
+                        batch_size = batch_size, shuffle = True,
+                        nb_epoch = nb_epoch, callbacks = [scorer(), checkpointer])
 
 #testing
 def test():
@@ -353,16 +371,37 @@ def test():
                         num_correct += 1
                     test_traverse(sentence[i], j, j, rest)
 
-    print 'predict predicate', num_predict_predicate
-    print 'predict argument', num_predict_argument
-    print 'require predicate', num_require_predicate
-    print 'require argument', num_require_argument
-    print 'correct', num_correct
+    #print 'predict predicate', num_predict_predicate
+    #print 'predict argument', num_predict_argument
+    #print 'require predicate', num_require_predicate
+    #print 'require argument', num_require_argument
+    #print 'correct', num_correct
 
     num_predict = num_predict_predicate + num_predict_argument
     num_require = num_require_predicate + num_require_argument
-    ans = 2. * num_correct / (num_predict + num_require)
-    print ans * 100
+    f = 2. * num_correct / (num_predict + num_require)
+    #print f * 100
+    acc = float(num_correct) / num_require
+    return f, acc
+
+class scorer(Callback):
+    best_f = 0
+    best_acc = 0
+    epoch_num = 0
+    global mod
+    def on_epoch_end(self, epoch, logs = {}):
+        f, acc = test()
+        print('accuracy:', acc)
+        print('f value:', f)
+        if (f > scorer.best_f):
+            scorer.best_f = f
+            scorer.best_acc = acc
+            scorer.epoch_num = epoch
+            print('saving the best-model : ', 'epoch : ', epoch, 'acc : ', acc, 'f : ', f)
+            mod.save_weights('best_model_weights.h5', overwrite = True)
+
+    def on_train_end(self, logs = {}):
+        print('the best model is:', 'epoch', scorer.epoch_num, 'best_acc', scorer.best_acc, 'best_f', scorer.best_f)
 
 time1 = time.time()
 WE = WE_proc()
@@ -371,9 +410,9 @@ time2 = time.time()
 train()
 time3 = time.time()
 
-test()
-time4 = time.time()
+#test()
+#time4 = time.time()
 
 print 'WE_proc time', time2 - time1
 print 'train time', time3 - time2
-print 'test time', time4 - time3
+#print 'test time', time4 - time3
